@@ -270,6 +270,28 @@ void hv_machine_free(HvMachine *m) {
     free(m->xchained);
 }
 
+uint64_t hv_stats_blocks(const HvMachine *m) {
+    uint64_t n = 0;
+    for (int i = 0; i < HV_MAX_CPUS; i++) n += __atomic_load_n(&m->percpu[i].cnt.blocks, __ATOMIC_RELAXED);
+    return n;
+}
+
+void hv_stats_collect(HvMachine *m) {
+    uint64_t exceptions = 0, interrupts = 0, slow_mem = 0, fetch_walks = 0;
+    for (int i = 0; i < HV_MAX_CPUS; i++) {
+        const HvCpuCounters *c = &m->percpu[i].cnt;
+        exceptions += __atomic_load_n(&c->exceptions, __ATOMIC_RELAXED);
+        interrupts += __atomic_load_n(&c->interrupts, __ATOMIC_RELAXED);
+        slow_mem += __atomic_load_n(&c->slow_mem, __ATOMIC_RELAXED);
+        fetch_walks += __atomic_load_n(&c->fetch_walks, __ATOMIC_RELAXED);
+    }
+    m->stats.blocks = hv_stats_blocks(m);
+    m->stats.exceptions = exceptions;
+    m->stats.interrupts = interrupts;
+    m->stats.fetch_walks = fetch_walks;
+    m->stat_slow_mem = slow_mem;
+}
+
 int hv_machine_add_ram(HvMachine *m, uint64_t pa, uint64_t size, void *host, int readonly) {
     if (m->nram == HV_MAX_RAM) return -1;
     HvRam *r = &m->ram[m->nram++];

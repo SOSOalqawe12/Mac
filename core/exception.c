@@ -43,14 +43,13 @@ void hv_pstate_set(HvCpu *cpu, uint64_t spsr) {
 }
 
 void hv_take_exception(HvCpu *cpu, int type, uint32_t esr, uint64_t far, int set_far, uint64_t ret) {
-    if (type == HV_EXC_SYNC) cpu->m->stats.exceptions++;
-    else cpu->m->stats.interrupts++;
     uint64_t spsr = hv_pstate_get(cpu);
-    {
-        HvStats *st = &cpu->m->stats;
-        uint32_t k = st->nelchg++ & 15;
-        st->elchg[k].from = ret, st->elchg[k].spsr = spsr, st->elchg[k].kind = (uint32_t)type, st->elchg[k].el = cpu->el;
-        st->elchg[k].to = esr;
+    if (cpu->pc_state) { /* this CPU's own counters: SVCs alone come a hundred thousand times a second */
+        HvCpuCounters *c = &cpu->pc_state->cnt;
+        hv_cnt_inc(type == HV_EXC_SYNC ? &c->exceptions : &c->interrupts);
+        uint32_t k = c->nelchg++ & 15;
+        c->elchg[k].from = ret, c->elchg[k].spsr = spsr, c->elchg[k].kind = (uint32_t)type, c->elchg[k].el = cpu->el;
+        c->elchg[k].to = esr;
     }
     if (cpu->m->trace || cpu->m->log >= 2)
         fprintf(stderr, "exception type %d esr %08x far %llx from pc %llx el%u\n", type, esr, (unsigned long long)far,
@@ -111,11 +110,11 @@ void hv_raise_abort(HvCpu *cpu, int insn, uint64_t va, uint32_t fsc, int wnr, in
 }
 
 void hv_eret(HvCpu *cpu) {
-    if (cpu->m) {
-        HvStats *st = &cpu->m->stats;
-        uint32_t k = st->nelchg++ & 15;
-        st->elchg[k].from = cpu->pc, st->elchg[k].to = cpu->elr_el1, st->elchg[k].spsr = cpu->spsr_el1;
-        st->elchg[k].kind = 9, st->elchg[k].el = cpu->el;
+    if (cpu->pc_state) {
+        HvCpuCounters *c = &cpu->pc_state->cnt;
+        uint32_t k = c->nelchg++ & 15;
+        c->elchg[k].from = cpu->pc, c->elchg[k].to = cpu->elr_el1, c->elchg[k].spsr = cpu->spsr_el1;
+        c->elchg[k].kind = 9, c->elchg[k].el = cpu->el;
     }
     cpu->pc = cpu->elr_el1;
     hv_pstate_set(cpu, cpu->spsr_el1);

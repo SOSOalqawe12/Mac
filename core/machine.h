@@ -94,19 +94,39 @@ typedef struct HvStats {
     uint64_t reset_why[8];    /* cache drops: full flush, TLBI by ASID, TLBI user VA, TLBI kernel VA, code change, user VA in every ASID (whole user half), keyed filter full, big user range */
     uint64_t why[6];          /* dispatcher entries by cause: chain fill, kick, exception/sysreg, interrupt, cached target, cache miss */
     uint64_t miss_kind[7];    /* cache misses by the branch that missed: RET, BR/BLR, B/BL, conditional, MSR, other, unknown */
-    uint64_t recent[16];      /* debugging: the last blocks the dispatcher entered (pc | el) */
-    struct { uint64_t from, to, spsr; uint32_t kind, el; } elchg[16]; /* debugging: last exception entries (kind = type) and ERETs (kind 9) */
-    uint32_t nelchg;
-    uint64_t nrecent;
     uint64_t translate_ticks, translated_insns, translated_words; /* time spent translating, guest and host code size */
     uint64_t retrans_va, retrans_vapa; /* translations of a VA (and VA+PA) translated before: diagnostics */
     uint64_t helper[12];      /* by HV_OP_* */
-    uint64_t tlb_flushes, fetch_walks, exceptions, interrupts;
+    uint64_t tlb_flushes;
+    /* Sums of every CPU's HvCpuCounters, as of the last hv_stats_collect (blocks counts dispatcher entries). */
+    uint64_t fetch_walks, exceptions, interrupts;
     uint64_t wfi, wfi_ticks;  /* WFI exits, host ticks spent asleep */
 } HvStats;
 
 #define HV_MAX_CPUS 8
 #define HV_WHINT_MANY (1ull << 63) /* whint: more than three; else up to three TLB codes + 1, 16 bits each */
+
+/* What a CPU's own hot paths write every time they run: each block entered, exception taken or
+   returned from, slow load or store, code fetch that walks. Kept per CPU, on cache lines of their
+   own: in m->stats these shared a line with settings every dispatcher entry reads (stop_pc, trace,
+   log), so CPUs running in parallel kept taking that line from each other, once per block entered.
+   Only the CPU's own thread writes them; hv_stats_collect adds them up into m->stats. */
+typedef struct HvCpuCounters {
+    uint64_t blocks;          /* dispatcher entries */
+    uint64_t exceptions, interrupts;
+    uint64_t slow_mem;        /* hv_mem_emulate calls */
+    uint64_t fetch_walks;     /* page-table walks to fetch code */
+    uint64_t nrecent;
+    uint64_t recent[16];      /* debugging: the last blocks this CPU's dispatcher entered (pc | el) */
+    uint32_t nelchg;
+    struct { uint64_t from, to, spsr; uint32_t kind, el; } elchg[16]; /* debugging: its last exception entries (kind = type) and ERETs (kind 9) */
+} __attribute__((aligned(128))) HvCpuCounters;
+
+/* One of the counters above, from its CPU's thread. Other threads read them while it runs, so the
+   load and store are atomic (relaxed: the same single load and store as ++). */
+static inline void hv_cnt_inc(uint64_t *c) {
+    __atomic_store_n(c, __atomic_load_n(c, __ATOMIC_RELAXED) + 1, __ATOMIC_RELAXED);
+}
 
 /* What each CPU has to itself and keeps across hv_cpu_reset (tests copy HvCpu
    structs around, so it lives here, by CPU index): its indirect-branch cache and
@@ -178,6 +198,9 @@ typedef struct HvPerCpu {
     uint32_t ijc_seq;            /* odd while it checks a block's mapping in its TLB and caches it (hv_ijc_fill_checked) */
     HvTlbStash stash[HV_STASHES];
     uint64_t stash_clock;
+    /* Last, and 128-byte aligned: it also keeps the next CPU's interrupt lines (read by translated
+       code all the time) off the line this CPU's stash bookkeeping writes. */
+    HvCpuCounters cnt;
 } HvPerCpu;
 
 #define HV_REQ_TLB_ALL 1u   /* drop the whole TLB and branch cache */
@@ -190,12 +213,15 @@ typedef struct HvMachine {
     HvMmio mmio[HV_MAX_MMIO];
     int nmmio;
 
-    HvJitRegion jit;
+    /* Placing a block bumps jit.used: a line apart from nmmio and the ram table, which every access and fetch reads. */
+    HvJitRegion jit __attribute__((aligned(128)));
     HvBlock *hash[HV_BLOCK_HASH];
     HvBlock *blocks;
     int nblocks;
     uint32_t max_blocks, max_slots; /* sized from the JIT region (machine.c) */
-    int flush_pending;   /* set by helpers; the dispatcher flushes once the block has left */
+    /* From here to stats: read on every dispatcher entry, written almost never, so on lines that
+       stay in every CPU's cache (nblocks above changes with every block made). */
+    int flush_pending __attribute__((aligned(128))); /* set by helpers; the dispatcher flushes once the block has left */
 
     void *gic;
     /* Devices: called between blocks every so often and while the CPU waits.
@@ -214,12 +240,14 @@ typedef struct HvMachine {
     int trace;           /* print every block entered */
     int log;             /* 1: unknown sysregs, undefined instructions, unmapped accesses; 2: also every exception */
     int slow_mem;        /* tests: send every load and store through hv_mem_emulate */
-    uint64_t stat_slow_mem; /* hv_mem_emulate calls */
+    uint64_t stat_slow_mem; /* hv_mem_emulate calls (every CPU's, as of the last hv_stats_collect) */
     uint64_t access_pc;  /* guest PC of the load/store being emulated, for logs */
     uint64_t watch_va;   /* debugging: log every write that touches this guest VA (0: off) */
     uint64_t watch_pa;   /* debugging: the same by physical address */
-    HvStats stats;
-    int chain;               /* block chaining and the indirect-branch cache are enabled */
+    /* Some counters in it are still bumped outside --stats (translations, flushes, WFIs), so it
+       has lines of its own, apart from the settings above and from chain below. */
+    HvStats stats __attribute__((aligned(128)));
+    int chain __attribute__((aligned(128))); /* block chaining and the indirect-branch cache are enabled */
     uint64_t *slots;         /* chainable exits' targets (0: not chained) */
     uint32_t **slot_site;    /* the B in each exit's stub that chaining rewrites to jump to the target */
     uint32_t **slot_stub;    /* what that B goes to while it isn't chained */
@@ -245,7 +273,7 @@ typedef struct HvMachine {
     /* Stopping every CPU to flush all translations. */
     pthread_mutex_t stw_mu;
     pthread_cond_t stw_cv;
-    int stw_active;
+    int stw_active __attribute__((aligned(128))); /* read on every dispatcher entry: not on a line with the locks above */
     pthread_mutex_t big_mu;
     pthread_cond_t big_cv;
     uint64_t big_next, big_serving;
@@ -271,6 +299,10 @@ int hv_machine_init(HvMachine *m, size_t jit_bytes);
 /* The same with JIT memory the host provides (iOS: the region a debugger granted and its writable alias). */
 int hv_machine_init_jit(HvMachine *m, void *rx, void *rw, size_t jit_bytes);
 void hv_machine_free(HvMachine *m);
+/* Add every CPU's HvCpuCounters into m->stats (blocks, exceptions, interrupts, fetch_walks) and m->stat_slow_mem. */
+void hv_stats_collect(HvMachine *m);
+/* Blocks entered by every CPU so far. Only reads: any thread. */
+uint64_t hv_stats_blocks(const HvMachine *m);
 int hv_machine_add_ram(HvMachine *m, uint64_t pa, uint64_t size, void *host, int readonly);
 int hv_machine_add_mmio(HvMachine *m, uint64_t pa, uint64_t size, void *opaque,
                         uint64_t (*read)(void *, uint64_t, unsigned),

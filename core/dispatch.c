@@ -342,7 +342,7 @@ static uint32_t helper(HvCpu *cpu, const HvHelperInfo *info_in) {
         reg_hist[(info->insn >> 5) & 0xffff] += info->op == HV_OP_MRS ? 1 : 1ull << 32;
     switch (info->op) {
     case HV_OP_MEM:
-        cpu->m->stat_slow_mem++;
+        if (cpu->pc_state) hv_cnt_inc(&cpu->pc_state->cnt.slow_mem);
         if (cpu->m->stats_interval) { /* --stats: which kinds of access take the slow path */
             HvMemOp op;
             if (hv_mem_decode(info->insn, &op) == 0 && op.kind < 12) cpu->m->stats.slow_kind[op.kind]++;
@@ -408,17 +408,22 @@ void hv_debug_el0_in_kernel(HvCpu *cpu, const char *what) {
                             "miss site %llx\n  recent:", b ? (unsigned long long)b->va : 0ull, b ? b->flags : 0, lo, m->nblocks,
                     (unsigned long long)m->stats.block_flushes, (unsigned long long)cpu->last_stub,
                     (unsigned long long)cpu->miss_site);
-            for (int k = 15; k >= 0; k--) fprintf(stderr, " %llx", (unsigned long long)m->stats.recent[(m->stats.nrecent - 1 - k) & 15]);
+            const HvCpuCounters *c = cpu->pc_state ? &cpu->pc_state->cnt : NULL; /* this CPU's history */
+            if (!c) {
+                fprintf(stderr, " (no history)\n");
+                return;
+            }
+            for (int k = 15; k >= 0; k--) fprintf(stderr, " %llx", (unsigned long long)c->recent[(c->nrecent - 1 - k) & 15]);
             fprintf(stderr, "\n  (%s) el changes, oldest first:\n", what);
             for (int k = 15; k >= 0; k--) {
-                uint32_t i = (m->stats.nelchg - 1 - k) & 15;
-                if (m->stats.elchg[i].kind == 9)
-                    fprintf(stderr, "    eret at %llx from el%u to %llx spsr %llx\n", (unsigned long long)m->stats.elchg[i].from,
-                            m->stats.elchg[i].el, (unsigned long long)m->stats.elchg[i].to, (unsigned long long)m->stats.elchg[i].spsr);
+                uint32_t i = (c->nelchg - 1 - k) & 15;
+                if (c->elchg[i].kind == 9)
+                    fprintf(stderr, "    eret at %llx from el%u to %llx spsr %llx\n", (unsigned long long)c->elchg[i].from,
+                            c->elchg[i].el, (unsigned long long)c->elchg[i].to, (unsigned long long)c->elchg[i].spsr);
                 else
-                    fprintf(stderr, "    exception type %u esr %llx from el%u pc %llx (spsr %llx)\n", m->stats.elchg[i].kind,
-                            (unsigned long long)m->stats.elchg[i].to, m->stats.elchg[i].el,
-                            (unsigned long long)m->stats.elchg[i].from, (unsigned long long)m->stats.elchg[i].spsr);
+                    fprintf(stderr, "    exception type %u esr %llx from el%u pc %llx (spsr %llx)\n", c->elchg[i].kind,
+                            (unsigned long long)c->elchg[i].to, c->elchg[i].el,
+                            (unsigned long long)c->elchg[i].from, (unsigned long long)c->elchg[i].spsr);
             }
         }
     }
@@ -574,6 +579,7 @@ static void print_stats(HvCpu *cpu, int force) {
         return;
     }
     double dt = (double)(now - last_t) / 24e6;
+    hv_stats_collect(m); /* the per-CPU counts behind blocks, exceptions, interrupts and fetch walks */
     HvStats *s = &m->stats;
 #define RATE(f) ((double)(s->f - last.f) / dt)
     fprintf(stderr,
@@ -883,6 +889,7 @@ static int run_loop(HvCpu *cpu, int one) {
     uint64_t chain_pc = 0;    /* where that exit was going, and in which state */
     uint32_t chain_flags = 0;
     uint32_t last_reason = HV_EXIT_BRANCH;
+    HvCpuCounters *cnt = &cpu->pc_state->cnt; /* kept across hv_cpu_reset, as pc_state is */
     hv_self = cpu;
     unpark(cpu);
     for (;;) {
@@ -936,7 +943,7 @@ static int run_loop(HvCpu *cpu, int one) {
                         last_reason, why, (unsigned long long)cpu->miss_site, (unsigned long long)cpu->elr_el1,
                         (unsigned long long)cpu->spsr_el1, (unsigned long long)cpu->x[30], (unsigned long long)m->stats.fast_resumes);
                 for (int k = 0; k < 16; k++)
-                    fprintf(stderr, " %llx", (unsigned long long)m->stats.recent[(m->stats.nrecent + k) & 15]);
+                    fprintf(stderr, " %llx", (unsigned long long)cnt->recent[(cnt->nrecent + k) & 15]);
                 fprintf(stderr, "\n");
             }
         }
@@ -1039,7 +1046,7 @@ static int run_loop(HvCpu *cpu, int one) {
         prev_pc = cpu->pc;
         prev_b = b;
         if (m->stats_interval) m->stats.why[why]++;
-        m->stats.recent[m->stats.nrecent++ & 15] = cpu->pc | cpu->el;
+        cnt->recent[cnt->nrecent++ & 15] = cpu->pc | cpu->el;
         if (why == 5 && m->stats_interval) {
             int kind = 6;
             /* A plain walk: fetching could raise an abort in the guest. */
@@ -1061,8 +1068,8 @@ static int run_loop(HvCpu *cpu, int one) {
         cpu->exit_reason = HV_EXIT_BRANCH;
         cpu->last_stub = 0;
         cpu->icount++;
-        m->stats.blocks++;
-        if (m->stats_interval && cpu->index == 0 && (m->stats.blocks & 0xffff) == 0) print_stats(cpu, 0);
+        hv_cnt_inc(&cnt->blocks);
+        if (m->stats_interval && cpu->index == 0 && (cnt->blocks & 0xffff) == 0) print_stats(cpu, 0);
         if (m->gen_checks && ((uint64_t)(b->code - m->jit.base) >= m->jit.used || b->jit_gen != __atomic_load_n(&m->jit_gen, __ATOMIC_SEQ_CST)))
             fprintf(stderr, "hengevm: cpu %u entering %p (rx+%llx, used %llx) for va %llx: block gen %u, now %u, maker %u\n", cpu->index, (void *)b->code, (unsigned long long)(b->code - m->jit.base) * 4, (unsigned long long)m->jit.used * 4, (unsigned long long)b->va, b->jit_gen, m->jit_gen, b->maker);
         hv_enter(cpu, b->code);

@@ -173,8 +173,10 @@ int main(void) {
             run_native(p, &init, &native, reset_data);
             memcpy(native_data, data, DATA_SIZE);
             reset_data();
-            m.stat_slow_mem = 0;
+            hv_stats_collect(&m);
+            uint64_t slow0 = m.stat_slow_mem;
             int bad = run_jit(&m, p, &init, &jit, mode == 2 ? mmu_on : NULL);
+            hv_stats_collect(&m);
             if (!bad) bad = compare_cpus(p->name, &native, &jit);
             for (size_t off = 0; off < DATA_SIZE && !bad; off += 8)
                 if (memcmp(native_data + off, data + off, 8) != 0) {
@@ -186,7 +188,7 @@ int main(void) {
                     bad = 1;
                 }
             printf("%-11s %-18s: %-4s (%llu slow-path accesses)\n", p->name, mode_names[mode], bad ? "FAIL" : "ok",
-                   (unsigned long long)m.stat_slow_mem);
+                   (unsigned long long)(m.stat_slow_mem - slow0));
             failed += bad != 0;
         }
     }
