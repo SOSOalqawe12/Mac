@@ -55,7 +55,7 @@ jobs:
 
       - name: Husk's iOS libraries (cached)
         id: husk-cache
-        uses: actions/cache@v5
+        uses: actions/cache/restore@v5
         with:
           path: |
             ${{ env.HUSK }}/build/ios-arm64/sysroot
@@ -80,6 +80,15 @@ jobs:
         run: |
           cd "$HUSK"
           ./scripts/build_rppairing_ios.sh
+
+      - name: Save Husk's iOS libraries
+        if: steps.husk-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            ${{ env.HUSK }}/build/ios-arm64/sysroot
+            ${{ env.HUSK }}/build/ios-arm64/lib
+          key: husk-ios-v1-${{ env.HUSK_COMMIT }}
 
       - name: Copy them into ios/deps
         run: |
