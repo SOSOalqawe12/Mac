@@ -88,6 +88,8 @@ That produces `~/Desktop/Henge.ipa`, and `package_ipa.sh --trollstore` writes `H
 
 `make` builds the engine for the Mac, `build/hengevm`, and `make test` runs its tests.
 
+Without a Mac, `tests/linux/run_tests.sh` builds the engine's instruction- and block-level tests for aarch64 Linux and runs them under QEMU. The script lists the packages it needs, and GitHub Actions runs it on every push.
+
 ## Licence
 
 GPL-2.0-or-later. Henge compiles in usbmuxd (GPLv2 or GPLv3) and code from Husk (GPL-2.0-or-later), so the shipped binary is a combined GPL work. It cannot go on the App Store. See [docs/licensing.md](docs/licensing.md).

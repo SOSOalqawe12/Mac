@@ -1,0 +1,20 @@
+# The engine's instruction- and block-level tests, on Linux under QEMU (tests/linux/run_tests.sh).
+name: Engine tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the aarch64 toolchain and QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang llvm binutils-aarch64-linux-gnu \
+            gcc-aarch64-linux-gnu libc6-dev-arm64-cross qemu-user
+      - name: Build and run the tests
+        run: tests/linux/run_tests.sh
