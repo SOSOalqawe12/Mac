@@ -37,6 +37,8 @@ On an iPhone 17 Pro, macOS reaches the lock screen in about 15 seconds. Discord 
 
 Sideload `Henge.ipa` from [Releases](https://github.com/Leviidev/Henge/releases) with SideStore or AltStore, or install `Henge.tipa` with TrollStore or TrollStore Lite. iOS or iPadOS 17 or later, on an A14 or M1 chip or newer. So far it's tested only on an iPhone 17 Pro: iPad support is new and hasn't run on a real iPad yet.
 
+This repository's own builds, with its engine changes, are made by GitHub Actions on a Mac with Xcode: the newest is under [Releases › latest](../../releases/tag/latest), and every run keeps its `Henge.ipa` and `Henge.tipa` (Actions › iOS app).
+
 - **JIT** is required: StikDebug, TrollStore (which stops at iOS 17.0), TrollStore Lite (which needs a jailbreak), a jailbreak on its own, or the StikJIT helper built into Henge (iOS 26 or later).
 - **Storage:** about 43 GB free for macOS Sequoia. That's 17 GB for the download, which you can delete afterwards, and 26 GB for the Mac.
 - **Memory:** a Mac gets 4, 6 or 8 GB. Sign Henge with the increased memory limit entitlement if your certificate has it.
