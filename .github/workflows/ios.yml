@@ -1,0 +1,122 @@
+# Builds the iOS app on a GitHub-hosted Mac with Xcode: Henge.ipa (SideStore, AltStore) and
+# Henge.tipa (TrollStore), as ios/scripts/package_ipa.sh makes them on a Mac. Both are uploaded
+# with the run, and builds of main also go to the "latest" release, for downloading on a phone.
+#
+# The prebuilt pieces ios/scripts/fetch_deps.sh copies from Husk (glib, libslirp and the pairing
+# library for iOS, StikJIT) are built here from Husk's own scripts, at the commit below, and cached.
+name: iOS app
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write # the "latest" release
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  HUSK_REPO: https://github.com/Leviidev/Husk
+  HUSK_COMMIT: afe83d45b31194c4cc9f7b3db7ec2c757db8346e
+  HUSK: /Users/runner/Documents/Coding/Husk # where the Makefile and fetch_deps.sh look for it
+
+jobs:
+  ipa:
+    runs-on: macos-26
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Pick the newest Xcode
+        run: |
+          XCODE=$(ls -d /Applications/Xcode*.app | grep -v -i beta | sort -V | tail -1)
+          sudo xcode-select -s "$XCODE"
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - name: Tools
+        run: |
+          brew install xcodegen meson ninja pkgconf || brew upgrade xcodegen meson ninja pkgconf || true
+          # glib's build imports Python's packaging module.
+          python3 -m pip install --quiet --break-system-packages packaging 2>/dev/null || python3 -m pip install --quiet packaging
+          rustup target add aarch64-apple-ios
+          xcodegen --version; meson --version; cargo --version
+
+      - name: Husk checkout
+        run: |
+          mkdir -p "$HUSK"
+          cd "$HUSK"
+          git init -q
+          git remote add origin "$HUSK_REPO"
+          git fetch -q --depth 1 origin "$HUSK_COMMIT"
+          git checkout -q FETCH_HEAD
+
+      - name: Husk's iOS libraries (cached)
+        id: husk-cache
+        uses: actions/cache@v5
+        with:
+          path: |
+            ${{ env.HUSK }}/build/ios-arm64/sysroot
+            ${{ env.HUSK }}/build/ios-arm64/lib
+          key: husk-ios-v1-${{ env.HUSK_COMMIT }}
+
+      - name: Build glib and libslirp for iOS (Husk's build_ios.sh)
+        if: steps.husk-cache.outputs.cache-hit != 'true'
+        run: |
+          cd "$HUSK"
+          . scripts/sources.sh
+          mkdir -p third_party/sources third_party/build
+          for u in "$FFI_SRC" "$GLIB_SRC" "$SLIRP_SRC"; do
+            f="third_party/sources/$(basename "$u")"
+            curl -fsSL --retry 3 --retry-delay 5 -o "$f" "$u"
+            tar -xf "$f" -C third_party/build
+          done
+          ./scripts/build_ios.sh libffi glib libslirp || { tail -n 80 build/logs/*.log; exit 1; }
+
+      - name: Build the pairing library for iOS (Husk's build_rppairing_ios.sh)
+        if: steps.husk-cache.outputs.cache-hit != 'true'
+        run: |
+          cd "$HUSK"
+          ./scripts/build_rppairing_ios.sh
+
+      - name: Copy them into ios/deps
+        run: |
+          ios/scripts/fetch_deps.sh
+          ls -la ios/deps/lib
+
+      - name: Build Henge.ipa
+        run: |
+          mkdir -p ~/Desktop
+          ios/scripts/package_ipa.sh || { tail -n 150 ios/build/DerivedData.buildlog; exit 1; }
+
+      - name: Build Henge.tipa (TrollStore)
+        run: ios/scripts/package_ipa.sh --trollstore
+
+      - name: Upload the app
+        uses: actions/upload-artifact@v6
+        with:
+          name: Henge-${{ github.sha }}
+          path: |
+            ~/Desktop/Henge.ipa
+            ~/Desktop/Henge.tipa
+          if-no-files-found: error
+
+      - name: Upload the build log
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: buildlog-${{ github.sha }}
+          path: ios/build/DerivedData.buildlog
+          if-no-files-found: ignore
+
+      - name: Publish to the "latest" release
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest ~/Desktop/Henge.ipa ~/Desktop/Henge.tipa \
+            --target "$GITHUB_SHA" --prerelease --title "Henge (latest build)" \
+            --notes "Built by GitHub Actions from ${GITHUB_SHA}. Sideload Henge.ipa with SideStore or AltStore, or install Henge.tipa with TrollStore. Henge needs JIT (StikDebug, TrollStore or the built-in StikJIT helper on iOS 26 and later) and an A14, M1 or newer chip."
