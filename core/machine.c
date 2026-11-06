@@ -319,6 +319,9 @@ int hv_machine_add_mmio(HvMachine *m, uint64_t pa, uint64_t size, void *opaque,
 }
 
 HvRam *hv_ram_lookup(HvMachine *m, uint64_t pa) {
+    /* Nearly every address is guest RAM, the board's second region (after the boot ROM): try it first. */
+    HvRam *main = m->main_ram;
+    if (main && pa - main->pa < main->size) return main;
     for (int i = 0; i < m->nram; i++) {
         HvRam *r = &m->ram[i];
         if (pa - r->pa < r->size) return r;

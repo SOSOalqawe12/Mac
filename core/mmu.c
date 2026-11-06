@@ -21,6 +21,8 @@ static int granule_bits(uint32_t tg, int ttbr1) {
    call nothing in libc: hv_tlb_refill runs them from translated code without
    saving the guest's SIMD registers, which libc's memory routines would use. */
 static HvRam *ram_of(HvMachine *m, uint64_t pa) {
+    HvRam *main = m->main_ram; /* page tables are in guest RAM: before the boot ROM, which comes first */
+    if (main && pa - main->pa < main->size) return main;
     for (int i = 0; i < m->nram; i++)
         if (pa - m->ram[i].pa < m->ram[i].size) return &m->ram[i];
     return NULL;
@@ -615,13 +617,17 @@ const uint32_t *hv_mmu_fetch(HvCpu *cpu, uint64_t va, uint64_t *pa, uint32_t *av
     HvTlbEntry *t = &cpu->tlb[(va >> HV_TLB_PAGE_BITS) & (HV_TLB_SIZE - 1)][hv_tlb_table(cpu, cpu->el)];
     if (t->exec_tag == hv_exec_key(va & ~PAGE_MASK, t->addend)) {
         uint8_t *host = (uint8_t *)(uintptr_t)(va + t->addend);
-        for (int i = 0; i < cpu->m->nram; i++) {
-            HvRam *r = &cpu->m->ram[i];
-            if ((uint64_t)(host - r->host) < r->size) {
-                *pa = r->pa + (uint64_t)(host - r->host);
-                *avail = (uint32_t)(((1ull << HV_TLB_PAGE_BITS) - (va & PAGE_MASK)) / 4);
-                return (const uint32_t *)host;
-            }
+        /* Every block entered comes through here: guest RAM first, then the other regions (the boot ROM). */
+        HvRam *r = cpu->m->main_ram;
+        if (!r || (uint64_t)(host - r->host) >= r->size) {
+            r = NULL;
+            for (int i = 0; i < cpu->m->nram && !r; i++)
+                if ((uint64_t)(host - cpu->m->ram[i].host) < cpu->m->ram[i].size) r = &cpu->m->ram[i];
+        }
+        if (r) {
+            *pa = r->pa + (uint64_t)(host - r->host);
+            *avail = (uint32_t)(((1ull << HV_TLB_PAGE_BITS) - (va & PAGE_MASK)) / 4);
+            return (const uint32_t *)host;
         }
     }
     HvWalk w;
