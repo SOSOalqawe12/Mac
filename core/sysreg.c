@@ -357,7 +357,7 @@ void hv_tlbi_apply(HvCpu *cpu, uint32_t op1, uint32_t crn, uint32_t crm, uint32_
             else {
                 hv_tlb_flush_user_range(cpu, va, len);
                 hv_tlb_stash_drop(cpu, all_asids ? -1 : (int)(xt >> 48));
-                cpu->m->stats.reset_why[7]++;
+                if (cpu->m->stats_interval) cpu->m->stats.reset_why[7]++;
                 hv_ijc_drop_range(cpu, va, len, all_asids ? -1 : (int)(xt >> 48));
             }
         } else {
@@ -374,7 +374,7 @@ void hv_tlbi_apply(HvCpu *cpu, uint32_t op1, uint32_t crn, uint32_t crm, uint32_
     } else if (by_asid) {
         hv_tlb_flush_user(cpu);
         hv_tlb_stash_drop(cpu, (int)(xt >> 48));
-        cpu->m->stats.reset_why[1]++;
+        if (cpu->m->stats_interval) cpu->m->stats.reset_why[1]++;
         hv_ijc_drop_asid(cpu, (uint16_t)(xt >> 48));
     } else {
         if (cpu->m->log >= 2)

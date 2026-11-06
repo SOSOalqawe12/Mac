@@ -386,7 +386,7 @@ void hv_invalidate_code(HvMachine *m, uint64_t pa) {
             hv_cpu_post(c, HV_REQ_IJC_RESET);
         }
     }
-    m->stats.reset_why[4]++;
+    if (m->stats_interval) m->stats.reset_why[4]++;
     /* Make a running chain leave (chains stay patched: see chain() in dispatch.c). */
     hv_machine_kick_all(m);
 }

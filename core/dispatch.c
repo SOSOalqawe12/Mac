@@ -134,7 +134,7 @@ static HvBlock *lookup(HvCpu *cpu, uint64_t va, uint64_t pa, uint32_t flags, con
        TLB; two CPUs doing it at once is harmless). */
     if (!__atomic_load_n(&ram->code_pages[pg], __ATOMIC_RELAXED)) {
         __atomic_store_n(&ram->code_pages[pg], 1, __ATOMIC_SEQ_CST); /* before the TLBs: see the end of tlb_fill */
-        m->stats.code_protects++;
+        if (m->stats_interval) m->stats.code_protects++;
         for (int i = 0; i < m->ncpus; i++) /* in every CPU's TLB, or a write from another CPU goes unnoticed */
             if (m->cpus[i]) hv_tlb_protect_code_page(m->cpus[i], ram, pg);
         gen = __atomic_load_n(&ram->page_gen[pg], __ATOMIC_ACQUIRE);
@@ -476,8 +476,10 @@ static int wait_for_interrupt(HvCpu *cpu) {
     pthread_mutex_unlock(&p->wake_mu);
     unpark(cpu);
     hv_big_lock(m);
-    m->stats.wfi++;
-    m->stats.wfi_ticks += mach_absolute_time() - t0;
+    if (m->stats_interval) {
+        m->stats.wfi++;
+        m->stats.wfi_ticks += mach_absolute_time() - t0;
+    }
     m->tick(m, cpu);
     return 0;
 }

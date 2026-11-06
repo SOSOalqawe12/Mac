@@ -138,8 +138,7 @@ void hv_mmu_walk(HvCpu *cpu, uint64_t va, HvAccess acc, int el, HvWalk *out) {
 }
 
 void hv_tlb_flush(HvCpu *cpu) {
-    if (cpu->m) cpu->m->stats.tlb_flushes++;
-    if (cpu->m) cpu->m->stats.reset_why[0]++;
+    if (cpu->m && cpu->m->stats_interval) cpu->m->stats.tlb_flushes++, cpu->m->stats.reset_why[0]++;
     hv_ijc_reset(cpu, 0); /* mappings changed: branch targets cached by VA are no longer trusted */
     hv_ijc_reset(cpu, 1);
     memset(cpu->tlb, 0x80, sizeof cpu->tlb);
@@ -253,7 +252,7 @@ void hv_ijc_switch(HvCpu *cpu) {
 }
 
 void hv_ijc_drop_asid(HvCpu *cpu, uint16_t asid) {
-    if (cpu->m) cpu->m->stats.ijc_resets++;
+    if (cpu->m && cpu->m->stats_interval) cpu->m->stats.ijc_resets++;
     cpu->asid_cid[asid] = 0;
     int cur = current_asid(cpu);
     if (cur == asid || cur < 0) hv_ijc_switch(cpu); /* without ASIDs, any drop may be about the current process */
@@ -265,7 +264,7 @@ void hv_ijc_reset(HvCpu *cpu, int kernel) {
     /* Every entry of the half is dead now (new ids or kernel generation): so are their hints. */
     if (cpu->pc_state) memset(cpu->pc_state->ijc_hint[kernel], 0, sizeof cpu->pc_state->ijc_hint[kernel]);
     if (cpu->m) {
-        cpu->m->stats.ijc_resets++;
+        if (cpu->m->stats_interval) cpu->m->stats.ijc_resets++;
         memset(cpu->pc_state->ijc_pages[kernel], 0, sizeof cpu->pc_state->ijc_pages[kernel]);
     }
     if (kernel) {
@@ -285,7 +284,7 @@ void hv_ijc_reset(HvCpu *cpu, int kernel) {
 /* TTBR0 changed or an ASID was dropped: only user-half (TTBR0) translations go;
    the kernel's TTBR1 entries stay. */
 void hv_tlb_flush_user(HvCpu *cpu) {
-    if (cpu->m) cpu->m->stats.tlb_flushes++;
+    if (cpu->m && cpu->m->stats_interval) cpu->m->stats.tlb_flushes++;
     uint32_t n = cpu->nuser_fills;
     cpu->nuser_fills = 0;
     if (n <= HV_USER_FILLS) {
@@ -418,10 +417,13 @@ static int ijc_drop_va(HvCpu *cpu, uint64_t va, int asid, int remote) {
         }
         if (drop) {
             if (remote && !kernel && asid < 0) return 0;
-            m->stats.reset_why[kernel ? 3 : 2]++;
+            if (m->stats_interval) m->stats.reset_why[kernel ? 3 : 2]++;
             uint64_t page = va & ~((1ull << HV_TLB_PAGE_BITS) - 1);
             if (kernel) ijc_clear_page(cpu, page, 1, cpu->ijc_salt[1], !remote);
-            else if (asid < 0) m->stats.reset_why[5]++, hv_ijc_reset(cpu, 0); /* every address space: their slots differ, so start the user half over */
+            else if (asid < 0) { /* every address space: their slots differ, so start the user half over */
+                if (m->stats_interval) m->stats.reset_why[5]++;
+                hv_ijc_reset(cpu, 0);
+            }
             else ijc_clear_page(cpu, page, 0, current_asid(cpu) < 0 ? cpu->ijc_salt[0] : (uint64_t)cpu->asid_cid[asid] << 48, !remote);
         }
     }
@@ -449,7 +451,7 @@ void hv_ijc_drop_range(HvCpu *cpu, uint64_t va, uint64_t len, int asid) {
     HvMachine *m = cpu->m;
     if (!m) return;
     if (asid < 0) { /* every address space */
-        m->stats.reset_why[5]++;
+        if (m->stats_interval) m->stats.reset_why[5]++;
         hv_ijc_reset(cpu, 0);
         return;
     }
@@ -475,7 +477,7 @@ void hv_ijc_drop_range(HvCpu *cpu, uint64_t va, uint64_t len, int asid) {
     {
         for (uint64_t p = first; p <= last; p++)
             if (ucode_has(cpu->pc_state, cid, p << HV_TLB_PAGE_BITS)) {
-                m->stats.reset_why[2]++;
+                if (m->stats_interval) m->stats.reset_why[2]++;
                 ijc_clear_page(cpu, p << HV_TLB_PAGE_BITS, 0, salt, 1);
             }
         return;
@@ -485,7 +487,7 @@ void hv_ijc_drop_range(HvCpu *cpu, uint64_t va, uint64_t len, int asid) {
         if (!k || (k - 1) >> 40 != cid) continue;
         uint64_t p = (k - 1) & 0xffffffffffull;
         if (p >= (first & 0xffffffffffull) && p <= (last & 0xffffffffffull)) {
-            m->stats.reset_why[2]++;
+            if (m->stats_interval) m->stats.reset_why[2]++;
             ijc_clear_page(cpu, p << HV_TLB_PAGE_BITS, 0, salt, 1);
         }
     }
@@ -705,7 +707,7 @@ void hv_ijc_fill(HvCpu *cpu, HvBlock *b) {
     if (!(pcs->ijc_keyed[k >> 6] >> (k & 63) & 1)) {
         pcs->ijc_keyed[k >> 6] |= 1ull << (k & 63);
         if (++pcs->ijc_keyed_count > (1u << 17)) { /* an eighth full: start the cache and the filter over */
-            m->stats.reset_why[6]++;
+            if (m->stats_interval) m->stats.reset_why[6]++;
             hv_ijc_reset(cpu, 0);
             hv_ijc_reset(cpu, 1);
             memset(pcs->ijc_keyed, 0, sizeof pcs->ijc_keyed);
@@ -851,7 +853,7 @@ void hv_tlb_switch_user(HvCpu *cpu, uint64_t old, uint64_t now) {
         return;
     }
     walk_begin(cpu);
-    m->stats.tlb_flushes++;
+    if (m->stats_interval) m->stats.tlb_flushes++;
     uint32_t n = cpu->nuser_fills;
     cpu->nuser_fills = 0;
     HvTlbStash *s = NULL;
