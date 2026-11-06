@@ -41,7 +41,7 @@ This repository's own builds, with its engine changes, are made by GitHub Action
 
 - **JIT** is required: StikDebug, TrollStore (which stops at iOS 17.0), TrollStore Lite (which needs a jailbreak), a jailbreak on its own, or the StikJIT helper built into Henge (iOS 26 or later).
 - **Storage:** about 43 GB free for macOS Sequoia. That's 17 GB for the download, which you can delete afterwards, and 26 GB for the Mac.
-- **Memory:** a Mac gets 4, 6 or 8 GB. Sign Henge with the increased memory limit entitlement if your certificate has it.
+- **Memory:** a Mac gets 4, 6 or 8 GB, or 12 or 16 GB with Swap turned on in its settings: its memory is then a file in free storage that iOS pages out to and back in, so it can be more than the device has (and slower once the Mac uses more than that). Sign Henge with the increased memory limit entitlement if your certificate has it.
 
 Then open the Install tab, pick macOS Sequoia 15.6.1, and keep Henge open with the device plugged in. Tahoe 26.6.2 and macOS 27.2 are offered too, but they aren't tested yet.
 

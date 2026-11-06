@@ -164,7 +164,7 @@ int henge_vm_boot_display(const uint8_t **pixels, int *width, int *height, int *
 size_t henge_available_memory(void) { return os_proc_available_memory(); }
 
 uint64_t henge_largest_mapping_mb(void) {
-    for (uint64_t mb = 16384; mb >= 1024; mb -= 512) {
+    for (uint64_t mb = 32768; mb >= 1024; mb -= 512) { /* swap allows 16 GB of guest RAM, plus room */
         void *p = mmap(NULL, mb << 20, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
         if (p != MAP_FAILED) {
             munmap(p, mb << 20);

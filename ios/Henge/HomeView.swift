@@ -144,7 +144,7 @@ extension VirtualMac {
     var summary: String {
         var parts: [String] = []
         if let osName { parts.append(osName) }
-        parts.append("\(ramMB / 1024) GB")
+        parts.append(swapOn ? "\(ramMB / 1024) GB with swap" : "\(ramMB / 1024) GB")
         return parts.joined(separator: " · ")
     }
 }

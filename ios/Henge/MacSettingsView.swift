@@ -28,13 +28,25 @@ struct MacSettingsView: View {
                     HStack(alignment: .firstTextBaseline) {
                         Text("\(mac.ramMB / 1024) GB").font(.system(size: 26, weight: .bold))
                         Spacer()
-                        Text(Entitlements.increasedMemory ? "Outside the app's limit once JIT is on" : "Used from free storage if needed")
+                        Text(mac.swapOn ? "Swaps to free storage"
+                             : Entitlements.increasedMemory ? "Outside the app's limit once JIT is on" : "Used from free storage if needed")
                             .font(.system(size: 13)).foregroundStyle(Desk.dim).multilineTextAlignment(.trailing)
                     }
                     Picker("Memory", selection: Binding(get: { mac.ramMB / 1024 }, set: { mac.ramMB = $0 * 1024; save() })) {
-                        ForEach([4, 6, 8], id: \.self) { Text("\($0) GB").tag($0) }
+                        ForEach(GuestMemory.sizesGB(swap: mac.swapOn), id: \.self) { Text("\($0) GB").tag($0) }
                     }
                     .pickerStyle(.segmented)
+                    Toggle("Swap", isOn: Binding(get: { mac.swapOn }, set: { on in
+                        mac.swap = on
+                        // Without swap the most is 8 GB.
+                        if !on, let most = GuestMemory.sizesGB(swap: false).last, mac.ramMB > most * 1024 { mac.ramMB = most * 1024 }
+                        save()
+                    }))
+                    .font(.system(size: 16))
+                    Text(mac.swapOn
+                         ? "This Mac's memory is a file in free storage, and iOS moves the parts the Mac isn't using out to it when it needs room. So the Mac can have more memory than this \(Device.name), up to 16 GB. It slows down when it uses more than the \(Device.name) can hold, and it needs as much free storage as its memory. Changes apply the next time this Mac starts."
+                         : "Turn on to give this Mac up to 16 GB of memory by swapping to free storage.")
+                        .font(.system(size: 13)).foregroundStyle(Desk.dim)
                 }
                 .padding(17)
                 .deskCard()
