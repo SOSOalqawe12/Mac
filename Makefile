@@ -108,7 +108,10 @@ clean:
 # make ios-lib -> build/ios/libhengevm.a. Networking links the arm64 iOS builds
 # of libslirp and glib from Husk's sysroot (scripts there make them); see ios/README.md.
 IOS_SDK = $(shell xcrun --sdk iphoneos --show-sdk-path)
-IOS_CC = xcrun --sdk iphoneos clang -arch arm64 -miphoneos-version-min=17.0 -isysroot $(IOS_SDK)
+# -mcpu: Henge needs an A14 or M1 anyway, and clang's default for iOS is the A7, which turns every
+# __atomic_* into an LDXR/STXR loop (exit_req, the TLBI sequence numbers, block publishing). For the
+# A14 they are single LSE instructions (SWP, LDADD, CAS) and acquire loads are LDAPR.
+IOS_CC = xcrun --sdk iphoneos clang -arch arm64 -mcpu=apple-a14 -miphoneos-version-min=17.0 -isysroot $(IOS_SDK)
 IOS_DEPS ?= $(HOME)/Documents/Coding/Husk/build/ios-arm64/sysroot
 IOS_CFLAGS = -std=c11 -Wall -Wextra -O2 -g -Icore -Ihost -Idevices -I$(IOS_DEPS)/include/slirp
 IB = build/ios
