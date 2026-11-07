@@ -29,8 +29,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      # The app uses iOS 27 APIs (ExternalMacDisplay's sceneAccessory), so it needs the iOS 27 SDK: the newest
-      # Xcode by version, betas and release candidates included.
+      # The newest Xcode by version, betas and release candidates included. With the iOS 27 SDK (Xcode 27) the app
+      # gets iOS 27's external display accessory; with an older one it builds without it (ExternalMacDisplay.swift).
       - name: Pick the newest Xcode
         run: |
           for x in /Applications/Xcode*.app; do
@@ -42,8 +42,7 @@ jobs:
           SDK=$(xcrun --sdk iphoneos --show-sdk-version)
           echo "iOS SDK $SDK"
           if [ "${SDK%%.*}" -lt 27 ]; then
-            echo "::error::Henge needs the iOS 27 SDK (Xcode 27); the newest Xcode on this runner has iOS $SDK."
-            exit 1
+            echo "::warning::No iOS 27 SDK on this runner (newest: iOS $SDK): the app is built without iOS 27's external display accessory."
           fi
 
       - name: Tools
