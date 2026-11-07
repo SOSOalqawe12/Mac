@@ -29,12 +29,22 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # The app uses iOS 27 APIs (ExternalMacDisplay's sceneAccessory), so it needs the iOS 27 SDK: the newest
+      # Xcode by version, betas and release candidates included.
       - name: Pick the newest Xcode
         run: |
-          XCODE=$(ls -d /Applications/Xcode*.app | grep -v -i beta | sort -V | tail -1)
+          for x in /Applications/Xcode*.app; do
+            v=$(defaults read "$x/Contents/Info" CFBundleShortVersionString 2>/dev/null) && echo "$v $x"
+          done | sort -V | tee "$RUNNER_TEMP/xcodes.txt"
+          XCODE=$(tail -1 "$RUNNER_TEMP/xcodes.txt" | cut -d' ' -f2-)
           sudo xcode-select -s "$XCODE"
           xcodebuild -version
-          xcrun --sdk iphoneos --show-sdk-version
+          SDK=$(xcrun --sdk iphoneos --show-sdk-version)
+          echo "iOS SDK $SDK"
+          if [ "${SDK%%.*}" -lt 27 ]; then
+            echo "::error::Henge needs the iOS 27 SDK (Xcode 27); the newest Xcode on this runner has iOS $SDK."
+            exit 1
+          fi
 
       - name: Tools
         run: |
