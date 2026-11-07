@@ -33,6 +33,9 @@ struct ExternalMacDisplayModifier: ViewModifier {
         let session = content
             .onAppear { LegacyExternalDisplay.shared.begin(presentation) }
             .onDisappear { LegacyExternalDisplay.shared.end(presentation) }
+        // sceneAccessory is in the iOS 27 SDK, which comes with Xcode 27 and Swift 6.4. An older Xcode (GitHub's macOS
+        // runners have Xcode 26 at most) builds the app without it: then only LegacyExternalDisplay shows the Mac.
+        #if compiler(>=6.4)
         if #available(iOS 27.0, *) { // the compiler requires this to call the iOS 27 sceneAccessory API
             session.sceneAccessory {
                 ExternalNonInteractiveAccessory {
@@ -42,5 +45,8 @@ struct ExternalMacDisplayModifier: ViewModifier {
         } else {
             session
         }
+        #else
+        session
+        #endif
     }
 }

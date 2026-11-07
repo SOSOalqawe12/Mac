@@ -24,7 +24,11 @@ final class LegacyExternalDisplay {
     /// Whether the app delegate may answer for external display scenes, should UIKit ask it: not
     /// from iOS 27, where that scene is the accessory's.
     nonisolated static var offeredToAppDelegate: Bool {
+        #if compiler(>=6.4)
         if #available(iOS 27.0, *) { return false } else { return true }
+        #else
+        return true // built without the iOS 27 SDK, so without the accessory: whatever scene iOS offers comes here
+        #endif
     }
 
     private var plan = ExternalScreenPlan<MacPresentation>()
