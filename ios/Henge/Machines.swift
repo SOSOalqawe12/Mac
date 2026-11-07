@@ -16,11 +16,14 @@ struct VirtualMac: Identifiable, Codable, Hashable {
     /// The size macOS is told its screen is. Macs made before this was a choice have none: 16:9.
     var screenWidth: Int?
     var screenHeight: Int?
+    /// m4 fork: the iPad's own panel at Retina density. On by default on iPad, for Macs that never chose.
+    var retina: Bool?
+    var isRetina: Bool { Device.isPad && (retina ?? false) }
     /// Swap: the Mac's memory is a file in free storage, which iOS writes out and reads back as it
     /// needs room, so a Mac can have more memory than the device. Macs made before this have none: off.
     var swap: Bool?
     var swapOn: Bool { swap ?? false }
-    var screen: (width: Int, height: Int) { (screenWidth ?? 1920, screenHeight ?? 1080) }
+    var screen: (width: Int, height: Int) { isRetina ? Device.retinaScreen : (screenWidth ?? 1920, screenHeight ?? 1080) }
     var aspect: CGFloat { CGFloat(screen.width) / CGFloat(screen.height) }
 
     var directory: URL { Machines.directory(for: id) }
@@ -34,12 +37,9 @@ struct VirtualMac: Identifiable, Codable, Hashable {
 /// a file beside the disk: iOS's memory limit does not count a mapped file's pages either.
 ///
 /// With swap on it always uses the file. Memory left out of the footprint is still the device's own
-/// memory, which iOS can only compress; a file's pages it can write out to storage and read back, as a
-/// Mac swaps, so the Mac can be given more memory than the device has.
+/// memory, which iOS can only compress (and closes Henge when it runs out); a file's pages it can write
+/// out to storage and read back, as a Mac swaps, so the Mac can have more memory than the device can spare.
 enum GuestMemory {
-    /// The sizes a Mac can have, in GB. Past the device's own memory only with swap.
-    static func sizesGB(swap: Bool) -> [Int] { swap ? [4, 6, 8, 12, 16] : [4, 6, 8] }
-
     /// Points the engine at the file (it is unlinked as soon as it is open) and returns the size that fits.
     static func prepare(_ mac: VirtualMac) -> UInt64 {
         let file = mac.directory.appendingPathComponent("ram.tmp")

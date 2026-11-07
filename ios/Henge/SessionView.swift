@@ -1,4 +1,5 @@
 import SwiftUI
+import GameController
 
 /// A running Mac. Upright, its screen sits above a trackpad; on its side the screen fills the device
 /// and is its own trackpad. Zoomed in, the screen fills the device either way and follows the pointer.
@@ -7,6 +8,7 @@ struct SessionView: View {
     let mac: VirtualMac
     let close: () -> Void
 
+    @StateObject private var display = DisplayRouter()
     @State private var error: String?
     @State private var state: Int32 = 0
     @State private var cpusOn: Int32 = 0
@@ -16,11 +18,21 @@ struct SessionView: View {
     @State private var framesIn: UInt64 = 0
     @State private var log: [String] = []
     @State private var started = Date()
+    @State private var thermalState = ProcessInfo.processInfo.thermalState
     @AppStorage("henge.cpus") private var cpus = 4
+    @AppStorage("henge.matchScreenColors") private var matchScreenColors = true
+    @AppStorage("henge.display.brightness") private var screenBrightness = 1.0
+    @AppStorage("henge.cursor.scale") private var cursorScale = Device.isPad ? 1 : 3
+    @AppStorage("henge.cursor.sharp") private var sharpCursor = true
+    @AppStorage(HardwareMouse.scrollSpeedKey) private var scrollSpeed = 0.3
 
     @State private var typing = false
     @State private var zoomed = false
     @State private var showDetails = false
+    @State private var controlsHidden = false
+    @State private var showRevealHint = false
+    @State private var pointerRefused = false
+    @AppStorage("henge.controls.hintsShown") private var revealHintsShown = 0
     @State private var confirmStop = false
     @State private var zoomCentre = CGPoint(x: 0.5, y: 0.5) // where the zoomed view is, 0...1 of the Mac's screen
     @State private var map: UIImage?
@@ -40,7 +52,22 @@ struct SessionView: View {
             ZStack(alignment: .topLeading) {
                 (landscape || zoomed ? Color.black : Desk.page)
                 // One view in every layout: it holds the layer the engine draws into.
-                BootDisplay()
+                BootDisplay(display: display, role: .device)
+                    .opacity(display.isExternal ? 0 : 1)
+                    .overlay {
+                        if display.isExternal {
+                            VStack(spacing: 8) {
+                                Image(systemName: "display").font(.largeTitle)
+                                Text("Mac on external display").font(.headline)
+                                Text("Use the trackpad, keyboard or a connected mouse.")
+                                    .font(.subheadline)
+                            }
+                            .foregroundStyle(.white)
+                            .multilineTextAlignment(.center)
+                            .padding()
+                            .accessibilityElement(children: .combine)
+                        }
+                    }
                     .frame(width: layout.screen.width, height: layout.screen.height)
                     .clipShape(RoundedRectangle(cornerRadius: layout.fillsPhone ? 0 : 15, style: .continuous))
                     .overlay {
@@ -57,6 +84,26 @@ struct SessionView: View {
                 } else {
                     floatingControls(layout)
                 }
+                if pointerRefused && !showRevealHint {
+                    Label("Make Henge full screen to use the trackpad or mouse as the Mac's", systemImage: "cursorarrow.rays")
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 18).padding(.vertical, 12)
+                        .deskGlass(in: Capsule())
+                        .position(x: full.width / 2, y: insets.top + 40)
+                        .transition(.opacity)
+                        .allowsHitTesting(false)
+                }
+                if showRevealHint {
+                    Label("Tap with three fingers to show the controls", systemImage: "hand.tap")
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 18).padding(.vertical, 12)
+                        .deskGlass(in: Capsule())
+                        .position(x: full.width / 2, y: insets.top + 40)
+                        .transition(.opacity)
+                        .allowsHitTesting(false)
+                }
                 if let error { errorCard(error, layout) }
                 KeyboardCatcher(active: $typing).frame(width: 0, height: 0)
             }
@@ -64,6 +111,18 @@ struct SessionView: View {
             .ignoresSafeArea()
             .animation(.easeInOut(duration: 0.25), value: zoomed)
             .animation(.easeInOut(duration: 0.25), value: typing)
+            .animation(.easeInOut(duration: 0.25), value: controlsHidden)
+            .animation(.easeInOut(duration: 0.25), value: showRevealHint)
+            .onReceive(NotificationCenter.default.publisher(for: UIPointerLockState.didChangeNotification)) { _ in
+                pointerRefused = PointerLock.refused
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .GCMouseDidConnect)) { _ in
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) { pointerRefused = PointerLock.refused }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: Trackpad.threeFingerTap)) { _ in
+                controlsHidden = false
+                showRevealHint = false
+            }
             .onAppear { shown = layout.shown }
             .onChange(of: layout.shown) { shown = $0 }
         }
@@ -82,9 +141,18 @@ struct SessionView: View {
         }
         .onChange(of: pointerNeeded) { PointerLock.set(!$0) }
         .onChange(of: scenePhase) { phase in
-            guard phase != .active else { return }
+            guard phase != .active else {
+                display.refresh()
+                return
+            }
             HardwareKeys.releaseAll()
             HardwareMouse.shared.releaseButtons()
+        }
+        .onChange(of: showDetails) { showing in
+            if showing { HardwareKeys.releaseAll(); StickyKeys.shared.releaseAll() }
+        }
+        .onChange(of: confirmStop) { showing in
+            if showing { HardwareKeys.releaseAll(); StickyKeys.shared.releaseAll() }
         }
         .onAppear {
             UIApplication.shared.isIdleTimerDisabled = true
@@ -97,6 +165,7 @@ struct SessionView: View {
             HardwareKeys.releaseAll()
             HardwareMouse.shared.stop()
         }
+        .modifier(ExternalMacDisplayModifier(presentation: MacPresentation(display: display, aspect: mac.aspect)))
         .task { await run() }
         .task { await Sharing.followMacClipboard() }
     }
@@ -138,7 +207,9 @@ struct SessionView: View {
                 // Room to keep the controls off the Mac's menu bar, and the Mac above the on-screen keyboard.
                 let bar: CGFloat = 62
                 let room = typing ? full.height - insets.bottom - insets.top - bar - 8 : full.height
-                let height = max(min(room, (full.width - 2 * max(insets.leading, insets.trailing)) / aspect), 200)
+                // An iPad keeps clear of its side insets; a big iPhone (iPhone Duo) fills edge to edge.
+                let side = Device.isPad ? 2 * max(insets.leading, insets.trailing) : 0
+                let height = max(min(room, (full.width - side) / aspect), 200)
                 let width = height * aspect
                 let y = typing ? insets.top + bar : (full.height - height) / 2
                 screen = CGRect(x: (full.width - width) / 2, y: y, width: width, height: height)
@@ -148,7 +219,9 @@ struct SessionView: View {
                 pad = .zero
                 if y - insets.top >= 54 { barY = insets.top + (y - insets.top) / 2 }
             } else if landscape {
-                let height = min(full.height, (full.width - 2 * max(insets.leading, insets.trailing)) / aspect)
+                // Edge to edge. Phones wider than the Mac fill the height with room to spare beside the
+                // Dynamic Island; a squarer phone (iPhone Duo) fills all of it, island and corners included.
+                let height = min(full.height, full.width / aspect)
                 let width = height * aspect
                 screen = CGRect(x: (full.width - width) / 2, y: (full.height - height) / 2, width: width, height: height)
                 touch = CGRect(origin: .zero, size: full)
@@ -172,8 +245,10 @@ struct SessionView: View {
     // MARK: Upright
 
     @ViewBuilder private func uprightControls(_ layout: Layout) -> some View {
-        if !typing {
+        if !typing && !controlsHidden {
             HStack {
+                tool("eye.slash", "Hide controls") { hideControls() }
+                Spacer()
                 tool("keyboard", "Keyboard") { typing = true }
                 Spacer()
                 pasteTool
@@ -241,6 +316,16 @@ struct SessionView: View {
         .tint(Desk.raised)
     }
 
+    /// Hides the session's controls; three fingers on the screen bring them back. The first few times say so.
+    private func hideControls() {
+        controlsHidden = true
+        typing = false
+        guard revealHintsShown < 3 else { return }
+        revealHintsShown += 1
+        showRevealHint = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { showRevealHint = false }
+    }
+
     private func tool(_ symbol: String, _ label: String, tint: Color = Desk.text, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: symbol)
@@ -258,6 +343,7 @@ struct SessionView: View {
         let landscape = layout.touch.width > layout.touch.height
         let top = layout.insets.top + (landscape ? 8 : 6)
         let pill = HStack(spacing: 4) {
+            tool("eye.slash", "Hide controls", tint: .white) { hideControls() }
             tool("keyboard", "Keyboard", tint: .white) { typing.toggle() }
             pasteTool
             tool(zoomed ? "minus.magnifyingglass" : "plus.magnifyingglass", zoomed ? "Zoom out" : "Zoom in", tint: zoomed ? Desk.accentLight : .white) { zoomed.toggle() }
@@ -268,7 +354,9 @@ struct SessionView: View {
         .padding(.horizontal, 8)
         .frame(height: 50)
         .deskGlass(in: Capsule())
-        if let barY = layout.barY {
+        if controlsHidden {
+            EmptyView()
+        } else if let barY = layout.barY {
             pill.position(x: layout.touch.midX, y: barY)
         } else if landscape || typing {
             pill.position(x: layout.touch.midX, y: top + 25)
@@ -354,9 +442,30 @@ struct SessionView: View {
             List {
                 Section(phase) {
                     LabeledContent("CPUs on", value: "\(cpusOn) of \(cpus)")
+                    LabeledContent("iPad thermal", value: Self.thermalLabel(thermalState))
                     LabeledContent("Translated blocks", value: String(format: "%.1f M/s", blocksPerSecond / 1e6))
                     LabeledContent("Network frames", value: "\(framesOut) out, \(framesIn) in")
                     LabeledContent("Up", value: "\(Int(Date().timeIntervalSince(started))) s")
+                }
+                Section("Display") {
+                    Toggle("Color matching", isOn: $matchScreenColors)
+                    LabeledContent("Brightness", value: "\(Int(screenBrightness * 100))%")
+                    Slider(value: $screenBrightness, in: 0.4...1)
+                    Text("Brightness dims only the Mac's screen.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+                Section("Pointer") {
+                    Picker("Size", selection: $cursorScale) {
+                        Text("1×").tag(1)
+                        Text("2×").tag(2)
+                        Text("3×").tag(3)
+                    }
+                    .pickerStyle(.segmented)
+                    Toggle("Sharp edges", isOn: $sharpCursor)
+                    LabeledContent("Scroll speed", value: String(format: "%.1f×", scrollSpeed))
+                    Slider(value: $scrollSpeed, in: 0.1...1.5)
+                    Text("The Mac supplies a small pointer image. Enlarging it can look blurry; 1× is the sharpest on an iPad. Scroll speed changes apply immediately.")
+                        .font(.footnote).foregroundStyle(.secondary)
                 }
                 Section("Sharing") {
                     LabeledContent("Clipboard and folder", value: helperRunning ? "On" : "Not set up")
@@ -390,6 +499,16 @@ struct SessionView: View {
 
     // MARK: Running
 
+    private static func thermalLabel(_ state: ProcessInfo.ThermalState) -> String {
+        switch state {
+        case .nominal: return "Normal"
+        case .fair: return "Warm"
+        case .serious: return "Hot — performance reduced"
+        case .critical: return "Critical"
+        @unknown default: return "Unknown"
+        }
+    }
+
     private func run() async {
         let ram = GuestMemory.prepare(mac)
         HengeLog.log("session", "available memory \(henge_available_memory() >> 20) MB")
@@ -399,7 +518,14 @@ struct SessionView: View {
         }
         var buffer = [CChar](repeating: 0, count: 256)
         Sharing.prepare()
+        EngineTuning.apply()
         henge_vm_set_display(UInt32(mac.screen.width), UInt32(mac.screen.height))
+        if mac.isRetina {
+            henge_vm_set_display_mm(UInt32(Device.retinaMM.width), UInt32(Device.retinaMM.height))
+        } else {
+            henge_vm_set_display_mm(0, 0)
+        }
+        HengeLog.log("session", "screen \(mac.screen.width)x\(mac.screen.height) retina \(mac.isRetina)")
         let rc = henge_vm_boot(mac.rom.path, mac.disk.path, mac.aux.path, mac.ecid, mac.seed, ram, Int32(cpus), &buffer, buffer.count)
         if rc != 0 {
             error = String(cString: buffer)
@@ -411,6 +537,7 @@ struct SessionView: View {
         Machines.shared.update(used)
         var lastBlocks = henge_vm_blocks()
         var lastTime = Date()
+        var lastGPUFrames = henge_vm_gpu_frames()
         var tick = 0
         while !Task.isCancelled {
             state = henge_vm_state()
@@ -424,8 +551,19 @@ struct SessionView: View {
             framesIn = henge_vm_net_frames(0)
             helperRunning = Sharing.helperRunning
             log = Array(HengeLog.recentLines(200))
+            let heat = ProcessInfo.processInfo.thermalState
+            if heat.rawValue != thermalState.rawValue {
+                thermalState = heat
+                HengeLog.log("session", "thermal state: \(Self.thermalLabel(heat))")
+            }
             if state == 2 { break }
             tick += 1
+            if tick % 10 == 0 {
+                let gpuFrames = henge_vm_gpu_frames()
+                HengeLog.log("perf", "blocks/s \(String(format: "%.0f", blocksPerSecond)), GPU frames/10s \(gpuFrames &- lastGPUFrames), "
+                             + "network tx \(framesOut), rx \(framesIn), thermal \(Self.thermalLabel(heat))")
+                lastGPUFrames = gpuFrames
+            }
             if tick % 30 == 0 { HengeLog.logFootprint("session") } // how close to the limit, for a memory kill leaves no crash report
             if tick % 60 == 0 { MacPreview.save(for: mac) }
             try? await Task.sleep(nanoseconds: 1_000_000_000)

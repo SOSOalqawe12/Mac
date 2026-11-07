@@ -32,20 +32,16 @@ struct MacSettingsView: View {
                              : Entitlements.increasedMemory ? "Outside the app's limit once JIT is on" : "Used from free storage if needed")
                             .font(.system(size: 13)).foregroundStyle(Desk.dim).multilineTextAlignment(.trailing)
                     }
-                    Picker("Memory", selection: Binding(get: { mac.ramMB / 1024 }, set: { mac.ramMB = $0 * 1024; save() })) {
-                        ForEach(GuestMemory.sizesGB(swap: mac.swapOn), id: \.self) { Text("\($0) GB").tag($0) }
+                    Stepper("Memory", value: Binding(get: { mac.ramMB / 1024 }, set: { mac.ramMB = $0 * 1024; save() }), in: Device.memoryChoices)
+                        .font(.system(size: 16))
+                    if let note = Device.memoryNote(mac.ramMB / 1024, swap: mac.swapOn) {
+                        Text(note).font(.system(size: 13)).foregroundStyle(Desk.dim)
                     }
-                    .pickerStyle(.segmented)
-                    Toggle("Swap", isOn: Binding(get: { mac.swapOn }, set: { on in
-                        mac.swap = on
-                        // Without swap the most is 8 GB.
-                        if !on, let most = GuestMemory.sizesGB(swap: false).last, mac.ramMB > most * 1024 { mac.ramMB = most * 1024 }
-                        save()
-                    }))
-                    .font(.system(size: 16))
+                    Toggle("Swap", isOn: Binding(get: { mac.swapOn }, set: { mac.swap = $0; save() }))
+                        .font(.system(size: 16))
                     Text(mac.swapOn
-                         ? "This Mac's memory is a file in free storage, and iOS moves the parts the Mac isn't using out to it when it needs room. So the Mac can have more memory than this \(Device.name), up to 16 GB. It slows down when it uses more than the \(Device.name) can hold, and it needs as much free storage as its memory. Changes apply the next time this Mac starts."
-                         : "Turn on to give this Mac up to 16 GB of memory by swapping to free storage.")
+                         ? "This Mac's memory is a file in free storage, and iOS moves the parts the Mac isn't using out to it when it needs room. It needs as much free storage as its memory. Changes apply the next time this Mac starts."
+                         : "Turn on to let iOS move memory this Mac isn't using out to free storage, for a Mac with more memory than this \(Device.name) can spare.")
                         .font(.system(size: 13)).foregroundStyle(Desk.dim)
                 }
                 .padding(17)
@@ -63,18 +59,34 @@ struct MacSettingsView: View {
                 .padding(.vertical, 10)
                 .deskCard()
 
-                if Device.isPad {
+                if Device.fittingScreen.height != 1080 {
                     DeskHeading("Screen")
                     VStack(alignment: .leading, spacing: 12) {
-                        Picker("Screen", selection: Binding(get: { mac.screen.height == 1080 }, set: { wide in
-                            (mac.screenWidth, mac.screenHeight) = wide ? (1920, 1080) : Device.fittingScreen
+                        Picker("Screen", selection: Binding(get: {
+                            if mac.isRetina { return "retina" }
+                            if mac.screen.width == Device.performanceScreen.width,
+                               mac.screen.height == Device.performanceScreen.height { return "performance" }
+                            if mac.screen.width == 1920, mac.screen.height == 1080 { return "wide" }
+                            return "fit"
+                        }, set: { choice in
+                            mac.retina = choice == "retina"
+                            switch choice {
+                            case "retina": break
+                            case "performance": (mac.screenWidth, mac.screenHeight) = Device.performanceScreen
+                            case "wide": (mac.screenWidth, mac.screenHeight) = (1920, 1080)
+                            default: (mac.screenWidth, mac.screenHeight) = Device.fittingScreen
+                            }
                             save()
                         })) {
-                            Text("Fit this iPad").tag(false)
-                            Text("16:9").tag(true)
+                            if Device.isPad {
+                                Text("Retina").tag("retina")
+                                Text("Performance").tag("performance")
+                            }
+                            Text("Fit this \(Device.name)").tag("fit")
+                            Text("16:9").tag("wide")
                         }
                         .pickerStyle(.segmented)
-                        Text("\(mac.screen.width) × \(mac.screen.height). Changes apply the next time this Mac starts.")
+                        Text("\(mac.screen.width) × \(mac.screen.height). \(Device.isPad ? "Performance renders about 30% fewer pixels. " : "")Changes apply the next time this Mac starts.")
                             .font(.system(size: 13)).foregroundStyle(Desk.dim)
                     }
                     .padding(17)
