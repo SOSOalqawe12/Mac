@@ -52,6 +52,7 @@ int hv_machine_init_jit(HvMachine *m, void *rx, void *rw, size_t jit_bytes) {
 }
 
 static int init_rest(HvMachine *m) {
+    hv_kva_hist_init();
     /* The TLB layout (cpu.h): HV_TLBT from the environment here too, so the Mac tool and the tests can pick it. */
     hv_knob[HV_K_TLBT] = getenv("HV_TLBT") ? atoi(getenv("HV_TLBT")) : 1; /* table-major unless asked: 9-20% faster in 5 of 6 paired rounds of the mix */
     hv_tlb_tmajor = hv_knob[HV_K_TLBT] != 0;
