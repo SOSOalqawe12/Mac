@@ -44,6 +44,10 @@ jobs:
           rustup target add aarch64-apple-ios
           xcodegen --version; meson --version; cargo --version
 
+      # The app's own logic, as upstream tests it on a Mac: display routing and the JIT setup's advice.
+      - name: App logic tests
+        run: make test-display-routing test-jit-advice
+
       - name: Husk checkout
         run: |
           mkdir -p "$HUSK"
