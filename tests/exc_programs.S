@@ -128,6 +128,24 @@ PROGRAM p_el0
     mrs x18, tpidr_el0
 END p_el0
 
+// EL0 code that the dispatcher enters again and again at the same blocks: a WFE with no monitor
+// armed makes its block leave at the next exit, so every round comes back through the dispatcher,
+// where the block after it is in the indirect-branch cache from the first round on.
+PROGRAM p_el0_wfe
+    SETUP
+    msr sp_el0, x9
+    adr x0, 1f
+    msr elr_el1, x0
+    msr spsr_el1, xzr       // EL0t, interrupts unmasked
+    eret
+1:  mov x1, #0
+    mov x2, #100
+2:  wfe
+    add x1, x1, x2
+    subs x2, x2, #1
+    b.ne 2b
+END p_el0_wfe
+
 PROGRAM p_sysregs
     SETUP
     msr tpidr_el1, x1

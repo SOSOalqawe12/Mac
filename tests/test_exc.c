@@ -7,6 +7,7 @@ DECLARE_PROGRAM(p_svc);
 DECLARE_PROGRAM(p_brk_undef);
 DECLARE_PROGRAM(p_dabt);
 DECLARE_PROGRAM(p_el0);
+DECLARE_PROGRAM(p_el0_wfe);
 DECLARE_PROGRAM(p_sysregs);
 DECLARE_PROGRAM(p_irq);
 DECLARE_PROGRAM(p_fptrap);
@@ -98,6 +99,15 @@ int main(void) {
         check("el0", "still at EL0", c.el, 0);
         check("el0", "SP_EL1 banked", c.sp_el1, sp1);
         check("el0", "exceptions", c.x[24], 2);
+    }
+
+    static const TestProgram el0w = TEST_PROGRAM(p_el0_wfe);
+    if (!run(&el0w, &c, sp0)) {
+        check("el0 wfe", "sum of 100..1", c.x[1], 5050);
+        check("el0 wfe", "counter", c.x[2], 0);
+        check("el0 wfe", "still at EL0", c.el, 0);
+        check("el0 wfe", "exceptions", c.x[24], 0);
+        check("el0 wfe", "each round through the dispatcher", c.icount >= 100, 1);
     }
 
     static const TestProgram sr = TEST_PROGRAM(p_sysregs);

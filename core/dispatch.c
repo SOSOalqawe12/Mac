@@ -917,7 +917,10 @@ static int run_loop(HvCpu *cpu, int one) {
             continue;
         }
         /* Someone asked the CPU to leave (the 1 ms kicker, a device, an invalidation): service devices now. */
-        int kicked = __atomic_exchange_n(&cpu->exit_req, 0, __ATOMIC_RELAXED) != 0;
+        /* Read before clearing: nearly always it is 0, and an exchange would still write it, an atomic and the
+           line taken from the other CPUs (which set it), on every dispatcher entry. One set just after the read is
+           seen at the block's next checked exit, as one set just after the exchange always was. */
+        int kicked = __atomic_load_n(&cpu->exit_req, __ATOMIC_RELAXED) && __atomic_exchange_n(&cpu->exit_req, 0, __ATOMIC_RELAXED) != 0;
         if (kicked && m->big_lock_on) {
             /* Give another CPU its turn. Whatever it does in between may touch
                what this CPU's exclusive monitor watches, so the monitor clears. */
@@ -1044,7 +1047,11 @@ static int run_loop(HvCpu *cpu, int one) {
                 }
                 m->stats.fill_kind[kind]++;
             }
-            if (hv_ijc_fill_checked(cpu, b) && m->stats_interval) m->stats.ijc_fills++;
+            /* Already the first way's entry for this block: filling it again would write the same tag and code, and
+               its page's hint and filters were set when it went in (they are only emptied together with it), so skip
+               the fill and its two atomics and TLB check. A block in the second way is still filled, which moves it up. */
+            if (!(ent[0] == tag && ent[1] == (uint64_t)(uintptr_t)b->code) && hv_ijc_fill_checked(cpu, b) && m->stats_interval)
+                m->stats.ijc_fills++;
         }
         /* The block before left through a chainable direct branch to this one: link them. */
         /* Only if nothing in between (an abort, an interrupt) sent the CPU elsewhere. */
