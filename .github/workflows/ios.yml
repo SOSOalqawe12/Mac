@@ -95,6 +95,33 @@ jobs:
           ios/scripts/fetch_deps.sh
           ls -la ios/deps/lib
 
+      # StikJIT 1.9.0 as shipped writes JIT page addresses with nine hex digits, so a mapping above
+      # 0xfffffffff gets the wrong pages. ci/build-stikjit.sh rebuilds it with full-width addresses,
+      # as upstream's own CI build does (ci/build-bitrise.sh).
+      - name: Patched StikJIT (cached)
+        id: stikjit-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ runner.temp }}/StikJIT/StikJIT.xcframework
+          key: stikjit-v1-${{ hashFiles('ci/build-stikjit.sh', 'ci/stikjit-high-address.patch') }}
+
+      - name: Build the patched StikJIT
+        if: steps.stikjit-cache.outputs.cache-hit != 'true'
+        run: bash ci/build-stikjit.sh "$RUNNER_TEMP/StikJIT"
+
+      - name: Save the patched StikJIT
+        if: steps.stikjit-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ runner.temp }}/StikJIT/StikJIT.xcframework
+          key: stikjit-v1-${{ hashFiles('ci/build-stikjit.sh', 'ci/stikjit-high-address.patch') }}
+
+      - name: Use the patched StikJIT
+        run: |
+          rm -rf ios/deps/StikJIT.xcframework
+          ditto "$RUNNER_TEMP/StikJIT/StikJIT.xcframework" ios/deps/StikJIT.xcframework
+          ls ios/deps/StikJIT.xcframework/ios-arm64/StikJIT.framework
+
       - name: Build Henge.ipa
         run: |
           mkdir -p ~/Desktop
