@@ -113,7 +113,10 @@ IOS_SDK = $(shell xcrun --sdk iphoneos --show-sdk-path)
 # A14 they are single LSE instructions (SWP, LDADD, CAS) and acquire loads are LDAPR.
 IOS_CC = xcrun --sdk iphoneos clang -arch arm64 -mcpu=apple-a14 -miphoneos-version-min=17.0 -isysroot $(IOS_SDK)
 IOS_DEPS ?= $(HOME)/Documents/Coding/Husk/build/ios-arm64/sysroot
-IOS_CFLAGS = -std=c11 -Wall -Wextra -O2 -g -Icore -Ihost -Idevices -I$(IOS_DEPS)/include/slirp
+# -flto=thin: the engine's files are optimised together when the app links, so the small functions the
+# dispatcher calls on every entry (interrupt checks, the RAM lookup, JIT writes) are inlined across files. mmu.c keeps
+# -mgeneral-regs-only per function: clang does not inline code that may use SIMD into it.
+IOS_CFLAGS = -std=c11 -Wall -Wextra -O2 -g -flto=thin -Icore -Ihost -Idevices -I$(IOS_DEPS)/include/slirp
 IB = build/ios
 IOS_SRC = $(wildcard core/*.c) host/prof_ios.c host/jit_region.c host/disk.c host/vm.c host/net_slirp.c host/share.c host/audio_mac.c host/hvsparse.c host/usb_host.c \
           $(filter-out devices/pvg_mac.m,$(wildcard devices/*.c))
