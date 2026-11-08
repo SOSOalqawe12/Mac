@@ -145,8 +145,16 @@ void hv_tlb_flush(HvCpu *cpu) {
     if (cpu->m && cpu->m->stats_interval) cpu->m->stats.tlb_flushes++, cpu->m->stats.reset_why[0]++;
     hv_ijc_reset(cpu, 0); /* mappings changed: branch targets cached by VA are no longer trusted */
     hv_ijc_reset(cpu, 1);
-    memset(cpu->tlb, 0x80, sizeof cpu->tlb);
+    /* Only the entries filled since the last flush can be valid (both logs, unless one ran over). */
+    uint32_t nu = cpu->nuser_fills, nk = cpu->nkernel_fills;
+    if (nu <= HV_USER_FILLS && nk <= HV_KERNEL_FILLS) {
+        for (uint32_t k = 0; k < nu; k++) memset(&cpu->tlb[cpu->user_fills[k]], 0x80, sizeof cpu->tlb[0]);
+        for (uint32_t k = 0; k < nk; k++) memset(&cpu->tlb[cpu->kernel_fills[k]], 0x80, sizeof cpu->tlb[0]);
+    } else {
+        memset(cpu->tlb, 0x80, sizeof cpu->tlb);
+    }
     cpu->nuser_fills = 0;
+    cpu->nkernel_fills = 0;
     hv_tlb_stash_drop(cpu, -1);
 }
 
@@ -200,6 +208,7 @@ void hv_ucode_add(HvCpu *cpu, uint64_t va) {
     for (; m->ucode[i]; i = (i + 1) & ((1u << HV_UCODE_BITS) - 1))
         if (m->ucode[i] == key) return;
     if (m->ucode_count >= (1u << HV_UCODE_BITS) / 2) { /* half full: start the user half over */
+        ucode_clear(m);
         hv_ijc_reset(cpu, 0);
         hv_ijc_switch(cpu);
         cid = (uint32_t)(cpu->ijc_salt[0] >> 48);
@@ -218,6 +227,7 @@ static uint16_t fresh_cid(HvCpu *cpu) {
         ijc_clear(cpu, 0);
         ucode_clear(cpu->pc_state);
         memset(cpu->asid_cid, 0, sizeof cpu->asid_cid);
+        cpu->nasid_log = 0;
         cpu->next_cid = 1;
     }
     if (cpu->pc_state && cpu->pc_state->cid_chunks) memset(cpu->pc_state->cid_chunks[cpu->next_cid], 0, sizeof cpu->pc_state->cid_chunks[0]);
@@ -251,6 +261,8 @@ void hv_ijc_switch(HvCpu *cpu) {
     if (!cpu->asid_cid[asid]) {
         cpu->asid_cid[asid] = fresh_cid(cpu);
         cpu->cid_asid[cpu->asid_cid[asid]] = (uint16_t)asid;
+        if (cpu->nasid_log < HV_ASID_LOG) cpu->asid_log[cpu->nasid_log] = (uint16_t)asid;
+        if (cpu->nasid_log <= HV_ASID_LOG) cpu->nasid_log++;
     }
     cpu->ijc_salt[0] = (uint64_t)cpu->asid_cid[asid] << 48;
 }
@@ -280,8 +292,14 @@ void hv_ijc_reset(HvCpu *cpu, int kernel) {
         cpu->ijc_salt[1] = (uint64_t)cpu->kernel_gen << 48;
         return;
     }
-    memset(cpu->asid_cid, 0, sizeof cpu->asid_cid);
-    ucode_clear(cpu->pc_state); /* every user id is new now */
+    /* Every process gets a new user id: clear the ids given since the last time (all, if the log ran over).
+       The (id, page) set keeps the dead ids' pages (no live id matches them) until it is half full. */
+    if (cpu->nasid_log <= HV_ASID_LOG)
+        for (uint32_t k = 0; k < cpu->nasid_log; k++) cpu->asid_cid[cpu->asid_log[k]] = 0;
+    else
+        memset(cpu->asid_cid, 0, sizeof cpu->asid_cid);
+    cpu->nasid_log = 0;
+    if (cpu->pc_state) cpu->pc_state->last_fill[0] = 0;
     hv_ijc_switch(cpu);
 }
 
@@ -463,11 +481,26 @@ void hv_ijc_drop_va(HvCpu *cpu, uint64_t va, int asid) {
     ijc_drop_va(cpu, va, asid, 0);
 }
 
+static void stash_drop_va(HvPerCpu *p, uint64_t va, int asid);
+
 void hv_tlb_flush_va_asid(HvCpu *cpu, uint64_t va, int asid) {
     /* Tagged addresses may sit in any slot's tag byte, so check by the low 56 bits. */
     uint32_t idx = (va >> HV_TLB_PAGE_BITS) & (HV_TLB_SIZE - 1);
     hv_ijc_drop_va(cpu, va, asid);
     if (!((va >> 55) & 1)) hv_tlb_stash_drop(cpu, asid);
+    for (int el = 0; el < 3; el++) {
+        HvTlbEntry *e = hv_tlb_ent(cpu, idx, el);
+        memset(e, 0x80, sizeof *e);
+    }
+}
+
+/* One page (a TLBI by VA): as hv_tlb_flush_va_asid, but in the stashes only that page's entries go,
+   not every entry of the address space (macOS 27 sends tens of thousands a second, and each made a
+   process refill its whole TLB the next time it ran). */
+void hv_tlb_flush_va_page(HvCpu *cpu, uint64_t va, int asid) {
+    uint32_t idx = (va >> HV_TLB_PAGE_BITS) & (HV_TLB_SIZE - 1);
+    hv_ijc_drop_va(cpu, va, asid);
+    if (!((va >> 55) & 1) && cpu->pc_state) stash_drop_va(cpu->pc_state, va, asid);
     for (int el = 0; el < 3; el++) {
         HvTlbEntry *e = hv_tlb_ent(cpu, idx, el);
         memset(e, 0x80, sizeof *e);
@@ -607,6 +640,9 @@ static void tlb_fill(HvCpu *cpu, uint64_t va, int el, const HvWalk *w) {
     if (!((page_va >> 55) & 1)) {
         if (cpu->nuser_fills < HV_USER_FILLS) cpu->user_fills[cpu->nuser_fills] = (uint16_t)hv_tlb_code(slot, table);
         if (cpu->nuser_fills <= HV_USER_FILLS) cpu->nuser_fills++;
+    } else {
+        if (cpu->nkernel_fills < HV_KERNEL_FILLS) cpu->kernel_fills[cpu->nkernel_fills] = (uint16_t)hv_tlb_code(slot, table);
+        if (cpu->nkernel_fills <= HV_KERNEL_FILLS) cpu->nkernel_fills++;
     }
     e->addend = (int64_t)((uint64_t)(uintptr_t)(ram->host + (page_pa - ram->pa)) - page_va);
     e->read_tag = w->r ? page_va - HV_TLB_ADJ : HV_TLB_INVALID;
@@ -648,7 +684,7 @@ int hv_tlbi_drop_remote_va(HvCpu *target, uint64_t va, int asid) {
     if (s1 & 1) { if (target->m->stats_interval) target->m->stats.race_kind[0]++; return 0; } /* mid-walk: it may be about to fill from the old table */
     uint32_t c1 = __atomic_load_n(&p->ijc_seq, __ATOMIC_SEQ_CST);
     if (c1 & 1) { if (target->m->stats_interval) target->m->stats.race_kind[1]++; return 0; } /* caching a block it may have looked up through the old mapping */
-    if (!((va >> 55) & 1)) stash_drop(p, asid);
+    if (!((va >> 55) & 1)) stash_drop_va(p, va, asid);
     uint32_t idx = (va >> HV_TLB_PAGE_BITS) & (HV_TLB_SIZE - 1);
     int fetched = 0; /* the target may be running code from the page: it must leave and look again */
     for (int t = 0; t < 3; t++) { /* the slot whatever its tag byte, as hv_tlb_flush_va_asid does */
@@ -898,6 +934,31 @@ static void stash_drop(HvPerCpu *p, int asid) {
     }
 }
 
+/* Forget the stashed entries for va's page in address space asid (-1: all). Other CPUs do this to
+   the target's stashes too, under the same walk_seq check as stash_drop; they only ever write tags
+   (never an addend), so a restore racing it reads each entry whole or with a tag gone. */
+static void stash_drop_va(HvPerCpu *p, uint64_t va, int asid) {
+    uint64_t pg = va & 0x00ffffffffffffffull & ~(uint64_t)PAGE_MASK; /* tagged addresses: by the low 56 bits */
+    for (int i = 0; i < HV_STASHES; i++) {
+        HvTlbStash *s = &p->stash[i];
+        uint64_t t = __atomic_load_n(&s->ttbr0, __ATOMIC_SEQ_CST);
+        if (!t || (asid >= 0 && (int)(t >> 48) != asid)) continue;
+        uint32_t n = __atomic_load_n(&s->n, __ATOMIC_RELAXED);
+        if (n > HV_STASH_CAP) n = HV_STASH_CAP;
+        for (uint32_t k = 0; k < n; k++) {
+            HvTlbEntry *e = &s->ent[k];
+            uint64_t rt = __atomic_load_n(&e->read_tag, __ATOMIC_RELAXED), wt = __atomic_load_n(&e->write_tag, __ATOMIC_RELAXED),
+                     xt = __atomic_load_n(&e->exec_tag, __ATOMIC_RELAXED);
+            if (rt == HV_TLB_INVALID && wt == HV_TLB_INVALID && xt == HV_TLB_INVALID) continue;
+            uint64_t tag = rt != HV_TLB_INVALID ? rt + HV_TLB_ADJ : xt != HV_TLB_INVALID ? hv_exec_key(xt, e->addend) : wt + HV_TLB_ADJ;
+            if ((tag & 0x00ffffffffffffffull & ~(uint64_t)PAGE_MASK) != pg) continue;
+            __atomic_store_n(&e->read_tag, HV_TLB_INVALID, __ATOMIC_RELAXED);
+            __atomic_store_n(&e->write_tag, HV_TLB_INVALID, __ATOMIC_RELAXED);
+            __atomic_store_n(&e->exec_tag, HV_TLB_INVALID, __ATOMIC_RELAXED);
+        }
+    }
+}
+
 void hv_tlb_stash_drop(HvCpu *cpu, int asid) {
     if (cpu->pc_state) stash_drop(cpu->pc_state, asid);
 }
@@ -971,10 +1032,16 @@ void hv_tlb_switch_user(HvCpu *cpu, uint64_t old, uint64_t now) {
         if (r->ttbr0 != now) continue;
         int fresh = __atomic_load_n(&r->gen, __ATOMIC_SEQ_CST) == r->saved_gen;
         __atomic_store_n(&r->ttbr0, 0, __ATOMIC_SEQ_CST); /* used up either way: the live TLB has them now */
-        if (!fresh) break;
+        if (!fresh) {
+            if (m->stats_interval) m->stats.stash_stale++;
+            break;
+        }
         for (uint32_t j = 0; j < r->n; j++) {
+            const HvTlbEntry *from = &r->ent[j];
+            if (from->read_tag == HV_TLB_INVALID && from->write_tag == HV_TLB_INVALID && from->exec_tag == HV_TLB_INVALID)
+                continue; /* its page had a TLBI while it was put aside (stash_drop_va) */
             HvTlbEntry *e = &cpu->tlb[0] + r->slot[j];
-            *e = r->ent[j];
+            *e = *from;
             cpu->user_fills[cpu->nuser_fills++] = r->slot[j];
             if (e->write_tag != HV_TLB_INVALID) {
                 const uint8_t *host = (const uint8_t *)(uintptr_t)(e->write_tag + HV_TLB_ADJ + e->addend);

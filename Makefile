@@ -112,7 +112,8 @@ IOS_SDK = $(shell xcrun --sdk iphoneos --show-sdk-path)
 # __atomic_* into an LDXR/STXR loop (exit_req, the TLBI sequence numbers, block publishing). For the
 # A14 they are single LSE instructions (SWP, LDADD, CAS) and acquire loads are LDAPR.
 IOS_CC = xcrun --sdk iphoneos clang -arch arm64 -mcpu=apple-a14 -miphoneos-version-min=17.0 -isysroot $(IOS_SDK)
-IOS_DEPS ?= $(HOME)/Documents/Coding/Husk/build/ios-arm64/sysroot
+# ios/deps/include/slirp first when it holds libslirp's headers (they are all the engine takes from there).
+IOS_DEPS ?= $(if $(wildcard ios/deps/include/slirp/libslirp.h),$(CURDIR)/ios/deps,$(HOME)/Documents/Coding/Husk/build/ios-arm64/sysroot)
 # -flto=thin: the engine's files are optimised together when the app links, so the small functions the
 # dispatcher calls on every entry (interrupt checks, the RAM lookup, JIT writes) are inlined across files. mmu.c keeps
 # -mgeneral-regs-only per function: clang does not inline code that may use SIMD into it.
