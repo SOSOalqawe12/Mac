@@ -166,7 +166,7 @@ void hv_cpu_ack_wake(HvCpu *cpu) {
     if (cpu->pc_state) ack_wake(cpu->pc_state);
 }
 
-void hv_cpu_process_requests(HvCpu *cpu) {
+void hv_cpu_process_queued(HvCpu *cpu) {
     HvPerCpu *p = cpu->pc_state;
     uint64_t seq = __atomic_load_n(&p->req_seq, __ATOMIC_ACQUIRE);
     if (seq == __atomic_load_n(&p->ack_seq, __ATOMIC_RELAXED)) return;

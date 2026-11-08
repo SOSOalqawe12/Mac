@@ -352,8 +352,14 @@ uint64_t hv_cpu_post_tlbi(HvCpu *target, uint32_t op1, uint32_t crn, uint32_t cr
 uint64_t hv_cpu_post(HvCpu *target, uint32_t flags);
 /* Wait until target has done everything up to seq (or is parked, and will before it runs). */
 void hv_cpu_sync(HvCpu *self, HvCpu *target, uint64_t seq);
-/* The owner: do what other CPUs asked. */
-void hv_cpu_process_requests(HvCpu *cpu);
+/* The owner: do what other CPUs asked. The dispatcher asks on every block it enters and nearly always nothing is
+   waiting, so the check is inline and only the work is a call. */
+void hv_cpu_process_queued(HvCpu *cpu);
+static inline void hv_cpu_process_requests(HvCpu *cpu) {
+    HvPerCpu *p = cpu->pc_state;
+    if (__atomic_load_n(&p->req_seq, __ATOMIC_ACQUIRE) != __atomic_load_n(&p->ack_seq, __ATOMIC_RELAXED))
+        hv_cpu_process_queued(cpu);
+}
 void hv_cpu_ack_wake(HvCpu *cpu);
 void hv_big_lock(HvMachine *m);
 void hv_big_unlock(HvMachine *m);
