@@ -5,6 +5,7 @@
 #include <stdio.h>
 
 #include "cpu.h"
+#include "machine.h"
 
 struct HvRam;
 
@@ -83,7 +84,22 @@ uint32_t hv_mmu_access(HvCpu *cpu, uint64_t va, HvAccess acc, int el, uint64_t *
 
 /* For the dispatcher: host pointer to the guest instructions at va and how many
    can be read before the page ends. On a fault, the instruction abort is taken
-   and NULL is returned. */
-const uint32_t *hv_mmu_fetch(HvCpu *cpu, uint64_t va, uint64_t *pa, uint32_t *avail);
+   and NULL is returned. It runs for every block the dispatcher enters, nearly always
+   a TLB hit in guest RAM: that is inline, the rest (other RAM, walks, aborts) a call. */
+const uint32_t *hv_mmu_fetch_slow(HvCpu *cpu, uint64_t va, uint64_t *pa, uint32_t *avail);
+static inline const uint32_t *hv_mmu_fetch(HvCpu *cpu, uint64_t va, uint64_t *pa, uint32_t *avail) {
+    const uint64_t mask = (1ull << HV_TLB_PAGE_BITS) - 1;
+    const HvTlbEntry *t = hv_tlb_ent(cpu, (uint32_t)(va >> HV_TLB_PAGE_BITS) & (HV_TLB_SIZE - 1), hv_tlb_table(cpu, cpu->el));
+    const HvRam *r = cpu->m->main_ram;
+    if (!(va & 3) && r && t->exec_tag == hv_exec_key(va & ~mask, t->addend)) {
+        uint8_t *host = (uint8_t *)(uintptr_t)(va + (uint64_t)t->addend);
+        if ((uint64_t)(host - r->host) < r->size) {
+            *pa = r->pa + (uint64_t)(host - r->host);
+            *avail = (uint32_t)(((1ull << HV_TLB_PAGE_BITS) - (va & mask)) / 4);
+            return (const uint32_t *)host;
+        }
+    }
+    return hv_mmu_fetch_slow(cpu, va, pa, avail);
+}
 
 #endif

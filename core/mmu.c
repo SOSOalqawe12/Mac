@@ -711,7 +711,7 @@ int hv_tlbi_drop_remote_va(HvCpu *target, uint64_t va, int asid) {
     return ok;
 }
 
-const uint32_t *hv_mmu_fetch(HvCpu *cpu, uint64_t va, uint64_t *pa, uint32_t *avail) {
+const uint32_t *hv_mmu_fetch_slow(HvCpu *cpu, uint64_t va, uint64_t *pa, uint32_t *avail) {
     if (va & 3) {
         hv_raise_sync(cpu, HV_EC_PC_ALIGN, 0, va, va);
         return NULL;
